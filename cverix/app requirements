@@ -1,0 +1,6 @@
+Contacts Manager
+Purpose: A simple web-based contact management system.
+Features:
+- Add new contacts with name, phone, and email.
+- View, update, and delete contacts.
+Requirements: Use SQLAlchemy to define and manipulate the contacts table.

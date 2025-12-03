@@ -35,13 +35,8 @@ class ContactManager(MyBase):
         if "@" not in address:
             raise ValueError("Not a valid email address")
         return address
-session = Session(engine)
+
 def load_image(path: str) -> bytes:
     with open(path, "rb") as img:
         return img.read()
 
-
-stmt = select(ContactManager)
-result = session.execute(stmt)
-for items in result.scalars():
-    print(items.name, items.email)

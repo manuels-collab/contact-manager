@@ -1,6 +1,5 @@
 from flask import current_app, Blueprint, request, jsonify
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import select, update, delete
 from wtforms import Form, StringField, validators
 from PIL import Image
 from io import BytesIO
@@ -17,7 +16,6 @@ MAX_BYTES = MAX_SIZE_MB * 1024 * 1024
 def compress_image(file):
     img = Image.open(file)
 
-    # Convert unsupported modes
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
 
@@ -25,12 +23,18 @@ def compress_image(file):
     max_width = 1200
 
     while True:
-        width_percent = max_width / float(img.size[0])
-        height = int(float(img.size[1]) * width_percent)
-        resized_img = img.resize((max_width, height))
+        width_ratio = max_width / float(img.size[0])
+        resized_img = img.resize(
+            (max_width, int(img.size[1] * width_ratio))
+        )
 
         buffer = BytesIO()
-        resized_img.save(buffer, format="PNG", optimize=True, quality=quality)
+        resized_img.save(
+            buffer,
+            format="PNG",
+            optimize=True,
+            quality=quality
+        )
         size = buffer.tell()
 
         if size <= MAX_BYTES:
@@ -47,64 +51,83 @@ def compress_image(file):
 
 # ---------------- WTForms VALIDATION ----------------
 class ContactManagerForm(Form):
-    username = StringField("Username",
-                           [validators.Length(min=3, max=50, message="Username must be 3–50 chars")])
+    username = StringField(
+        "Username",
+        [
+            validators.Length(min=3, max=50, message="Username must be 3–50 chars"),
+            validators.data_required(message="Username required"),
+        ],
+    )
 
-    email = StringField("Email",
-                        [validators.Email(message="Valid email required")])
+    email = StringField(
+        "Email",
+        [
+            validators.Email(message="Valid email required")
+        ],
+    )
 
-    address = StringField("Address",
-                          [validators.Length(min=4, message="Address required")])
+    address = StringField(
+        "Address",
+        [
+            validators.Length(min=4, message="Address required")
+        ],
+    )
 
-    phone = StringField("Phone",
-                        [validators.Length(min=10, max=15, message="Phone must be 10–15 digits")])
+    phone = StringField(
+        "Phone",
+        [
+            validators.Length(min=10, max=15, message="Phone must be 10–15 digits")
+        ],
+    )
 
 
 # ---------------- ROUTE: ADD USER ----------------
 @main.route("/add_user", methods=["POST"])
 def add_user():
-
     form = ContactManagerForm(request.form)
 
-    # Validate form
     if not form.validate():
         return jsonify({"errors": form.errors}), 400
 
-    # Validate file
     if "file" not in request.files:
-        return jsonify({"error": "File is required"}), 400
+        return jsonify({"error": "Profile image required"}), 400
 
     file = request.files["file"]
 
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
 
-    # Basic image validation
     try:
         Image.open(file)
     except Exception:
-        return jsonify({"error": "Uploaded file must be an image"}), 400
+        return jsonify({"error": "Uploaded file must be a valid image"}), 400
 
-    # Compress
     file.seek(0)
     compressed_bytes = compress_image(file)
 
     SessionLocal = current_app.SessionLocal
     session = SessionLocal()
 
-    # Create new user
-    user = ContactManager(
-        name=form.username.data,
-        phone=form.phone.data,
-        address=form.address.data,
-        email=form.email.data,
-        profile_picture=compressed_bytes,
-    )
+    try:
+        user = ContactManager(
+            name=form.username.data,
+            phone=form.phone.data,
+            address=form.address.data,
+            email=form.email.data,
+            profile_picture=compressed_bytes,
+        )
 
-    session.add(user)
-    session.commit()
+        session.add(user)
+        session.commit()
 
-    return jsonify({"message": "User created successfully"}), 201
+        return jsonify({"message": "User created successfully"}), 201
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        session.close()
 
 
 # ---------------- ROUTE: GET USERS ----------------
@@ -113,9 +136,69 @@ def get_users():
     SessionLocal = current_app.SessionLocal
     session = SessionLocal()
 
-    stmt = select(ContactManager)
-    rows = session.scalars(stmt).all()
+    try:
+        rows = session.scalars(select(ContactManager)).all()
+        users = [r.to_dict() for r in rows]
+        return jsonify({"users": users}), 200
 
-    users = [r.to_dict() for r in rows]
+    finally:
+        session.close()
 
-    return jsonify({"users": users})
+
+# ---------------- ROUTE: UPDATE USER ----------------
+@main.route("/update_user/<user_id>", methods=["PUT"])
+def update_user_item(user_id):
+    SessionLocal = current_app.SessionLocal
+    session = SessionLocal()
+
+    try:
+        # Accept both JSON and form-data
+        data = request.get_json() if request.is_json else request.form
+
+        name = data.get("username")
+        address = data.get("address")
+
+        if not name and not address:
+            return jsonify({"error": "No data provided"}), 400
+
+        stmt = (
+            update(ContactManager)
+            .where(ContactManager.phone == user_id)
+            .values(
+                **{k: v for k, v in {"name": name, "address": address}.items() if v}
+            )
+        )
+
+        session.execute(stmt)
+        session.commit()
+
+        return jsonify({"message": "Successfully updated"}), 200
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        session.close()
+
+
+@main.route('/delete_users', methods=["DELETE"])
+def delete_all_users():
+
+    SessionLocal = current_app.SessionLocal
+    session = SessionLocal()
+
+    try:
+        stmt = delete(ContactManager)
+
+        session.execute(stmt)
+        session.commit()
+
+        return  jsonify({"message": 'All users dedleted succesfully'}), 200
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        session.close()
